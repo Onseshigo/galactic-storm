@@ -1,0 +1,96 @@
+name: Create release
+
+on:
+  workflow_dispatch:
+  
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Create release
+    runs-on: ubuntu-latest
+  
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      
+      - name: Read info.json
+        id: mod_info
+        run: |
+          VERSION=$(jq -r .version ./info.json)
+          NAME=$(jq -r .name ./info.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog entry
+        id: extract_entry
+        run: |
+          VERSION="${{ steps.mod_info.outputs.version }}"
+          
+          ENTRY=$(awk -v version="$VERSION" '
+            BEGIN {
+              RS="-+\r\n";
+              FS = "\n";
+            }
+            {
+              if ($1 == "Version: " version "\r") {
+                print "# " $1;
+                # print "### " $2;
+                
+                for(i=3; i<=NF; i++) {
+                  sub(/^([A-Za-z ]+):/, "\n###" $i, $i);
+                  sub(/ +- /, "- ", $i);
+                  print $i;
+                }
+              }
+            }
+          ' "changelog.txt")
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$ENTRY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        
+      - name: Make directory and copy files
+        id: prepare_mod
+        run: |
+          ARTIFACT_DIR="${{ steps.mod_info.outputs.name }}_${{ steps.mod_info.outputs.version }}"
+          MOD_DIR="${{ steps.mod_info.outputs.name }}_${{ steps.mod_info.outputs.version }}"
+          # MOD_DIR="${{ steps.mod_info.outputs.name }}_${{ steps.mod_info.outputs.version }}-${{ github.run_id }}"
+          DEST_DIR="$HOME/$ARTIFACT_DIR/$MOD_DIR"
+          mkdir -p "$DEST_DIR"
+          
+          SOURCE_DIR=$(dirname "./")
+          cp -rv "$SOURCE_DIR"/* "$DEST_DIR"
+          
+          OUT_DIR="$HOME/$ARTIFACT_DIR/"
+          echo "out_dir=$OUT_DIR" >> $GITHUB_OUTPUT
+          echo "art_dir=$ARTIFACT_DIR" >> $GITHUB_OUTPUT
+          echo "mod_dir=$MOD_DIR" >> $GITHUB_OUTPUT
+        
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ steps.prepare_mod.outputs.art_dir }}"
+          path: |
+            ${{ steps.prepare_mod.outputs.out_dir }}
+            !.gitattributes
+            !.gitignore
+            !.github
+            !LICENSE.txt
+            !README.md
+          
+      - name: Create mod archive
+        run: |
+          cd "${{ steps.prepare_mod.outputs.out_dir }}"
+          zip -r "${{ steps.prepare_mod.outputs.art_dir }}.zip" "."
+        
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "v${{ steps.mod_info.outputs.version }}-${{ github.run_id }}"
+          files: "${{ steps.prepare_mod.outputs.out_dir }}/${{ steps.prepare_mod.outputs.art_dir }}.zip"
+          body: "${{ steps.extract_entry.outputs.changelog }}"
+          token: $GITHUB_TOKEN
